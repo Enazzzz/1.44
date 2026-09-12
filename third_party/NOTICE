@@ -1,0 +1,9 @@
+Third-party software included in this repository:
+
+CLAP SDK (third_party/clap)
+  MIT License, Copyright (c) 2021 Alexandre BIQUE
+  https://github.com/free-audio/clap
+
+dr_wav.h / dr_mp3.h (third_party)
+  David Reid / mackron — public domain or MIT-0
+  https://github.com/mackron/dr_libs
