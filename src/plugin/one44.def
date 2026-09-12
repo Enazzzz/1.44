@@ -1,0 +1,3 @@
+LIBRARY one44
+EXPORTS
+	clap_entry DATA

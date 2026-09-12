@@ -7,10 +7,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <filesystem>
+#include <system_error>
 
 namespace one44 {
 namespace {
@@ -87,6 +85,41 @@ bool is_audio_name(const std::string &name) {
 	});
 	return lower.size() >= 4 &&
 		(lower.rfind(".wav") == lower.size() - 4 || lower.rfind(".mp3") == lower.size() - 4);
+}
+
+/// Starting folder for the in-GUI file browser (user home, with a platform fallback).
+std::string default_browse_dir() {
+#ifdef _WIN32
+	if (const char *profile = std::getenv("USERPROFILE")) {
+		return profile;
+	}
+	const char *drive = std::getenv("HOMEDRIVE");
+	const char *path = std::getenv("HOMEPATH");
+	if (drive && path) {
+		return std::string(drive) + path;
+	}
+	return "C:\\";
+#else
+	if (const char *home = std::getenv("HOME")) {
+		return home;
+	}
+	return "/tmp";
+#endif
+}
+
+/// Parent of `dir`, or `dir` itself at a filesystem root.
+std::string parent_browse_dir(const std::string &dir) {
+	const std::filesystem::path parent = std::filesystem::path(dir).parent_path();
+	if (parent.empty()) {
+		return dir;
+	}
+	std::string out = parent.string();
+	return out.empty() ? dir : out;
+}
+
+/// Joins a directory and a child name with the host path separator.
+std::string join_browse_path(const std::string &dir, const std::string &name) {
+	return (std::filesystem::path(dir) / name).string();
 }
 
 } // namespace
@@ -229,8 +262,7 @@ void GuiView::zoom_at(int x, double factor) {
 void GuiView::open_file_browser() {
 	file_browser_ = true;
 	if (browse_dir_.empty()) {
-		const char *home = std::getenv("HOME");
-		browse_dir_ = home ? home : "/tmp";
+		browse_dir_ = default_browse_dir();
 	}
 	browse_scroll_ = 0;
 	refresh_dir();
@@ -242,30 +274,28 @@ void GuiView::refresh_dir() {
 	browse_is_dir_.clear();
 	browse_names_.push_back("..");
 	browse_is_dir_.push_back(true);
-	DIR *dir = opendir(browse_dir_.c_str());
-	if (!dir) {
+	std::error_code ec;
+	const std::filesystem::path dir(browse_dir_);
+	if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
 		status_ = "Cannot open directory";
 		return;
 	}
 	std::vector<std::string> dirs;
 	std::vector<std::string> files;
-	while (dirent *ent = readdir(dir)) {
-		const char *name = ent->d_name;
-		if (std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0) {
+	std::filesystem::directory_iterator it(dir, ec);
+	for (; it != std::filesystem::directory_iterator() && !ec; it.increment(ec)) {
+		const std::filesystem::path child = it->path();
+		const std::string name = child.filename().string();
+		if (name == "." || name == "..") {
 			continue;
 		}
-		const std::string full = browse_dir_ + "/" + name;
-		struct stat st {};
-		if (stat(full.c_str(), &st) != 0) {
-			continue;
-		}
-		if (S_ISDIR(st.st_mode)) {
+		std::error_code type_ec;
+		if (std::filesystem::is_directory(child, type_ec)) {
 			dirs.push_back(name);
 		} else if (is_audio_name(name)) {
 			files.push_back(name);
 		}
 	}
-	closedir(dir);
 	std::sort(dirs.begin(), dirs.end());
 	std::sort(files.begin(), files.end());
 	for (const auto &d : dirs) {
@@ -325,19 +355,14 @@ void GuiView::mouse_down(int x, int y, int button) {
 				const std::string name = browse_names_[static_cast<size_t>(row)];
 				if (browse_is_dir_[static_cast<size_t>(row)]) {
 					if (name == "..") {
-						const auto slash = browse_dir_.find_last_of('/');
-						if (slash != std::string::npos && slash > 0) {
-							browse_dir_ = browse_dir_.substr(0, slash);
-						} else {
-							browse_dir_ = "/";
-						}
+						browse_dir_ = parent_browse_dir(browse_dir_);
 					} else {
-						browse_dir_ += "/" + name;
+						browse_dir_ = join_browse_path(browse_dir_, name);
 					}
 					browse_scroll_ = 0;
 					refresh_dir();
 				} else {
-					const std::string path = browse_dir_ + "/" + name;
+					const std::string path = join_browse_path(browse_dir_, name);
 					const DecodeResult result = sampler_->load_path(path);
 					if (result.error == DecodeError::None) {
 						status_ = "Loaded " + name;

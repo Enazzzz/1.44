@@ -6,7 +6,7 @@
 
 namespace one44 {
 
-/// Host-embedded window. Linux uses X11; Windows uses Win32.
+/// Host-embedded window. Linux uses X11; Windows uses a child HWND (CLAP win32 API).
 class GuiWindow {
 public:
 	GuiWindow();

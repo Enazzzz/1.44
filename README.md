@@ -4,6 +4,8 @@ ASR-10-era constraint sampler. A CLAP instrument built raw against the official 
 
 Load WAV or MP3, select a region, and commit it only if the 16-bit capture would have fit in the memory budget. Playback is MIDI-triggered and pitch-shifts by changing playback rate (chipmunk / demonic, period-accurate). Loop points are naive: no automatic crossfade.
 
+**Windows is the ship target.** Drop `one44.clap` into REAPER's CLAP path and instantiate **CLAP:1.44** / **CLAPi: 1.44**. Linux/X11 remains supported for local builds.
+
 ## Features (v1)
 
 - WAV and MP3 import, decoded to linear PCM
@@ -21,6 +23,61 @@ Load WAV or MP3, select a region, and commit it only if the 16-bit capture would
 
 Out of scope: time-stretch, multi-zone mapping, effects.
 
+## Windows — install in REAPER
+
+A prebuilt x64 binary lives at [`dist/windows-x64/one44.clap`](dist/windows-x64/one44.clap) (a renamed DLL). Copy it to one of the CLAP search paths:
+
+- `%LOCALAPPDATA%\Programs\Common\CLAP\one44.clap`
+- or `%COMMONPROGRAMFILES%\CLAP\one44.clap` (usually `C:\Program Files\Common Files\CLAP\one44.clap`)
+- or any extra folder listed under Preferences → Plug-ins → CLAP
+
+Then:
+
+1. Options → Preferences → Plug-ins → CLAP → **Rescan**
+2. Insert a track → **FX** → look for **1.44**
+3. Verified names: **CLAP:1.44** (Add FX) / **CLAPi: 1.44** (instrument)
+
+Track setup: arm the track for MIDI (or use the Virtual MIDI Keyboard). Open the editor: **Load** a WAV/MP3, drag **IN/OUT**, confirm the memory readout fits, **Commit**, then play notes. Root note (default C4 / MIDI 60) plays at the captured speed; other keys change playback rate.
+
+## Build (Windows, native)
+
+Dependencies: CMake ≥ 3.16 and a C++20 toolchain (MSVC or MinGW-w64).
+
+```bat
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure
+```
+
+The plugin is `build/one44.clap` (or `build/Release/one44.clap` with multi-config generators). Copy it to a CLAP path above, then rescan.
+
+```bat
+cmake --build build --target install-user
+```
+
+copies the module to `%LOCALAPPDATA%\Programs\Common\CLAP\one44.clap`.
+
+## Build (Windows x64 from Linux — mingw-w64)
+
+Dependencies: CMake ≥ 3.16, `g++-mingw-w64-x86-64` (posix-threaded), optional `wine` for the instantiate probe.
+
+```bash
+cmake -S . -B build-win \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/x86_64-w64-mingw32.cmake \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-win -j
+# optional: wine instantiate/process/gui.create smoke
+ctest --test-dir build-win --output-on-failure
+```
+
+This produces:
+
+| Artifact | Purpose |
+|---|---|
+| `build-win/one44.clap` | Windows x64 CLAP (statically linked MinGW runtime) |
+| `dist/windows-x64/one44.clap` | Same file, copied for shipping |
+| `build-win/one44_clap_probe.exe` | Headless instantiate/process/GUI-API check (run under Wine) |
+
 ## Build (Linux)
 
 Dependencies: CMake ≥ 3.16, a C++20 compiler, libX11, pthread. Tests also use `ffmpeg` (for the MP3 fixture).
@@ -35,9 +92,9 @@ This produces:
 
 | Artifact | Purpose |
 |---|---|
-| `build/one44.clap` | CLAP plugin (shared module) |
+| `build/one44.clap` | Linux CLAP plugin (shared module, X11 editor) |
 | `build/one44_tests` | Constraint, pitch, decoder, and playback unit tests |
-| `build/one44_clap_probe` | Headless instantiate/process check |
+| `build/one44_clap_probe` | Headless instantiate/process/GUI-API check |
 
 Install into the user CLAP path:
 
@@ -80,8 +137,6 @@ com.enazzzz.one-four-four=1|1.44 (1.44)
 Headless scan check (no GUI session required):
 
 ```bash
-# After copying to ~/.clap
-~/.clap/../  # plugin lives at ~/.clap/one44.clap
 ./build/one44_clap_probe ~/.clap/one44.clap
 ```
 
@@ -105,7 +160,7 @@ if fx >= 0 then
   reaper.ShowConsoleMsg("1.44 instantiated as CLAP instrument on track 1\n")
   ok = true
 else
-  reaper.ShowConsoleMsg("1.44 not found. Rescan CLAP paths (need ~/.clap/one44.clap).\n")
+  reaper.ShowConsoleMsg("1.44 not found. Rescan CLAP paths (need one44.clap on a CLAP path).\n")
 end
 ```
 
@@ -114,16 +169,6 @@ Run from the shell if you have a REAPER install and a display or a dummy X serve
 ```bash
 reaper -nonewinst "$(pwd)/scripts/reaper-check-one44.lua"
 ```
-
-## REAPER — Windows
-
-A Windows `.clap` is not built in this tree (the GUI backend is X11). If you add a Win32 window backend, install to:
-
-- `%LOCALAPPDATA%\Programs\Common\CLAP\one44.clap`
-- or `%COMMONPROGRAMFILES%\CLAP\one44.clap`
-- or a path added under Preferences → Plug-ins → CLAP
-
-Then rescan and load **1.44** the same way (FX on a MIDI track).
 
 ## GUI map
 
@@ -140,7 +185,7 @@ Then rescan and load **1.44** the same way (FX on a MIDI track).
 
 ## Tests
 
-Constraint math, MIDI playback-rate mapping, WAV/MP3 decode, and CLAP instantiate/process are required and run via `ctest`.
+Constraint math, MIDI playback-rate mapping, WAV/MP3 decode, and CLAP instantiate/process are required and run via `ctest`. The probe also checks that the native GUI API is advertised (`x11` on Linux, `win32` on Windows) and that `gui.create` succeeds without embedding.
 
 Byte-size formula (always 16-bit):
 
@@ -161,9 +206,11 @@ rate = 2^((midi_note - root_note) / 12)
 
 ```
 src/core/     constraint engine, decoder, voices, sampler
-src/gui/      software-rendered editor + X11 embed
+src/gui/      software-rendered editor + X11 / Win32 embed
 src/plugin/   CLAP entry, ports, params, state
 tests/        unit tests + clap_probe host
+cmake/        mingw-w64 toolchain for Windows x64 cross builds
+dist/         shipped binaries (Windows x64 .clap)
 third_party/  official CLAP SDK (vendored) + dr_wav/dr_mp3
 ```
 
