@@ -179,7 +179,7 @@ reaper -nonewinst "$(pwd)/scripts/reaper-check-one44.lua"
 - **MONO** — downmix on commit
 - **SNAP ZX** — snap loop markers to the nearest zero-crossing
 - **ONE-SHOT / FORWARD / PINGPONG** — MIDI loop mode (no loop crossfade)
-- Waveform: mouse wheel zoom, middle-drag pan, drag markers, click to scrub
+- Waveform: **drag to set the clip** (IN/OUT, shaded orange). Click without dragging to scrub. Orange **IN/OUT** tabs sit on the **top** edge; cyan **LS/LE** loop tabs sit on the **bottom** (so both stay visible when they share frames after LOAD). Drag the tabs to trim. Wheel zooms, middle-drag pans.
 - Budget slider: 64 KB–8 MB (default 1440 KB)
 - ADSR + root note: note-off uses release so notes do not hard-cut
 

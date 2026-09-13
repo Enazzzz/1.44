@@ -26,6 +26,18 @@ constexpr uint32_t kGood = 0xFF3CB86A;
 constexpr uint32_t kBad = 0xFFE05040;
 constexpr uint32_t kButton = 0xFF3A2C20;
 constexpr uint32_t kButtonOn = 0xFF6A4018;
+constexpr uint32_t kWaveBg = 0xFF1A140F;
+constexpr uint32_t kRegionFill = 0xFF3A2214;
+/// Half-width of IN/OUT and LS/LE hit targets, in GUI pixels.
+constexpr int kMarkerHitPx = 14;
+/// Pointer must move this far before a waveform click becomes a region sweep.
+constexpr int kSweepSlopPx = 5;
+constexpr int kRegionTabW = 16;
+constexpr int kRegionTabH = 16;
+constexpr int kLoopTabW = 16;
+constexpr int kLoopTabH = 16;
+/// Top band is IN/OUT tabs; bottom band is LS/LE tabs.
+constexpr int kHitBandH = 24;
 
 /// 5x7 packed glyphs for printable ASCII (32..126). Each column is 7 bits, LSB at the top.
 const uint8_t kFont[95][5] = {
@@ -148,6 +160,33 @@ void GuiView::fill_rect(int x, int y, int w, int h, uint32_t color) {
 		uint32_t *row = pixels_.data() + yy * kGuiWidth;
 		for (int xx = x; xx < x1; ++xx) {
 			row[xx] = color;
+		}
+	}
+}
+
+/// Alpha-blends `color` over the framebuffer. `alpha` is 0–255.
+void GuiView::blend_rect(int x, int y, int w, int h, uint32_t color, int alpha) {
+	if (w <= 0 || h <= 0 || alpha <= 0) {
+		return;
+	}
+	alpha = std::min(255, alpha);
+	const int inv = 255 - alpha;
+	const int cr = static_cast<int>((color >> 16) & 0xFFu);
+	const int cg = static_cast<int>((color >> 8) & 0xFFu);
+	const int cb = static_cast<int>(color & 0xFFu);
+	const int x1 = std::min(kGuiWidth, x + w);
+	const int y1 = std::min(kGuiHeight, y + h);
+	x = std::max(0, x);
+	y = std::max(0, y);
+	for (int yy = y; yy < y1; ++yy) {
+		uint32_t *row = pixels_.data() + yy * kGuiWidth;
+		for (int xx = x; xx < x1; ++xx) {
+			const uint32_t dst = row[xx];
+			const int r = (cr * alpha + static_cast<int>((dst >> 16) & 0xFFu) * inv) / 255;
+			const int g = (cg * alpha + static_cast<int>((dst >> 8) & 0xFFu) * inv) / 255;
+			const int b = (cb * alpha + static_cast<int>(dst & 0xFFu) * inv) / 255;
+			row[xx] = 0xFF000000u | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) |
+				static_cast<uint32_t>(b);
 		}
 	}
 }
@@ -320,6 +359,98 @@ void GuiView::apply_budget_from_x(int x) {
 	dirty_ = true;
 }
 
+/// Visual layout only: does not change region/loop frame values.
+GuiView::MarkerGeom GuiView::marker_geom(uint64_t frame, uint64_t pair_frame, bool region, bool is_start) const {
+	MarkerGeom g;
+	g.stem_x = frame_to_x(frame);
+	g.tab_w = region ? kRegionTabW : kLoopTabW;
+	g.tab_h = region ? kRegionTabH : kLoopTabH;
+	g.tab_y = region ? wave_y_ : wave_y_ + wave_h_ - g.tab_h;
+	const int pair_x = frame_to_x(pair_frame);
+	int nudge = 0;
+	if (std::abs(g.stem_x - pair_x) < g.tab_w) {
+		nudge = is_start ? -(g.tab_w / 2) : (g.tab_w / 2);
+	}
+	g.tab_x = g.stem_x - g.tab_w / 2 + nudge;
+	return g;
+}
+
+/// Closest handle. Top band = IN/OUT, bottom band = LS/LE; middle prefers region stems.
+GuiView::DragTarget GuiView::hit_waveform_handle(int x, int y) const {
+	const MarkerGeom in = marker_geom(sampler_->region_start(), sampler_->region_end(), true, true);
+	const MarkerGeom out = marker_geom(sampler_->region_end(), sampler_->region_start(), true, false);
+	const MarkerGeom ls = marker_geom(sampler_->loop_start(), sampler_->loop_end(), false, true);
+	const MarkerGeom le = marker_geom(sampler_->loop_end(), sampler_->loop_start(), false, false);
+
+	auto hit_tab = [&](const MarkerGeom &g) {
+		return hit_button(x, y, g.tab_x - 2, g.tab_y - 2, g.tab_w + 4, g.tab_h + 4) ||
+			(std::abs(x - g.stem_x) <= kMarkerHitPx && y >= g.tab_y && y < g.tab_y + g.tab_h);
+	};
+	auto closer_tab = [&](const MarkerGeom &a, const MarkerGeom &b, DragTarget ta, DragTarget tb) {
+		const bool ha = hit_tab(a);
+		const bool hb = hit_tab(b);
+		if (ha && hb) {
+			const int da = std::abs(x - (a.tab_x + a.tab_w / 2));
+			const int db = std::abs(x - (b.tab_x + b.tab_w / 2));
+			return da <= db ? ta : tb;
+		}
+		if (ha) {
+			return ta;
+		}
+		if (hb) {
+			return tb;
+		}
+		return DragTarget::None;
+	};
+	auto closer_stem = [&](const MarkerGeom &a, const MarkerGeom &b, DragTarget ta, DragTarget tb) {
+		const int da = std::abs(x - a.stem_x);
+		const int db = std::abs(x - b.stem_x);
+		if (da <= kMarkerHitPx && da <= db) {
+			return ta;
+		}
+		if (db <= kMarkerHitPx) {
+			return tb;
+		}
+		return DragTarget::None;
+	};
+
+	const bool in_top = y >= wave_y_ && y < wave_y_ + kHitBandH;
+	const bool in_bottom = y >= wave_y_ + wave_h_ - kHitBandH && y < wave_y_ + wave_h_;
+	if (in_top) {
+		return closer_tab(in, out, DragTarget::RegionStart, DragTarget::RegionEnd);
+	}
+	if (in_bottom) {
+		return closer_tab(ls, le, DragTarget::LoopStart, DragTarget::LoopEnd);
+	}
+	const DragTarget region = closer_stem(in, out, DragTarget::RegionStart, DragTarget::RegionEnd);
+	if (region != DragTarget::None) {
+		return region;
+	}
+	return closer_stem(ls, le, DragTarget::LoopStart, DragTarget::LoopEnd);
+}
+
+/// Sets IN/OUT from the click-drag anchor to the current pointer (order is clamped by the sampler).
+void GuiView::apply_region_sweep(int x) {
+	if (sampler_->source() == nullptr) {
+		return;
+	}
+	uint64_t frame = x_to_frame(x);
+	const uint64_t n = sampler_->source()->frame_count;
+	if (frame > n) {
+		frame = n;
+	}
+	sampler_->set_region(region_anchor_frame_, frame);
+	dirty_ = true;
+}
+
+/// Starts preview at `frame` without changing IN/OUT.
+void GuiView::begin_scrub(uint64_t frame) {
+	sampler_->scrub_preview(frame);
+	if (!sampler_->preview_playing()) {
+		sampler_->start_preview();
+	}
+}
+
 void GuiView::mouse_down(int x, int y, int button) {
 	mouse_x_ = x;
 	mouse_y_ = y;
@@ -477,26 +608,17 @@ void GuiView::mouse_down(int x, int y, int button) {
 	}
 
 	if (x >= wave_x_ && x < wave_x_ + wave_w_ && y >= wave_y_ && y < wave_y_ + wave_h_) {
-		const int rs = frame_to_x(sampler_->region_start());
-		const int re = frame_to_x(sampler_->region_end());
-		const int ls = frame_to_x(sampler_->loop_start());
-		const int le = frame_to_x(sampler_->loop_end());
-		auto near = [&](int mx) { return std::abs(x - mx) <= 6; };
-		if (near(rs)) {
-			drag_ = DragTarget::RegionStart;
-		} else if (near(re)) {
-			drag_ = DragTarget::RegionEnd;
-		} else if (near(ls)) {
-			drag_ = DragTarget::LoopStart;
-		} else if (near(le)) {
-			drag_ = DragTarget::LoopEnd;
-		} else {
-			drag_ = DragTarget::Scrub;
-			sampler_->scrub_preview(x_to_frame(x));
-			if (!sampler_->preview_playing()) {
-				sampler_->start_preview();
-			}
+		if (sampler_->source() == nullptr) {
+			return;
 		}
+		const DragTarget handle = hit_waveform_handle(x, y);
+		if (handle != DragTarget::None) {
+			drag_ = handle;
+			return;
+		}
+		drag_ = DragTarget::WavePending;
+		drag_down_x_ = x;
+		region_anchor_frame_ = x_to_frame(x);
 	}
 }
 
@@ -504,6 +626,9 @@ void GuiView::mouse_up(int x, int y, int button) {
 	(void)x;
 	(void)y;
 	if (button == 1) {
+		if (drag_ == DragTarget::WavePending) {
+			begin_scrub(region_anchor_frame_);
+		}
 		mouse_left_ = false;
 		drag_ = DragTarget::None;
 	}
@@ -516,6 +641,13 @@ void GuiView::mouse_up(int x, int y, int button) {
 void GuiView::mouse_move(int x, int y) {
 	mouse_x_ = x;
 	mouse_y_ = y;
+	if (drag_ == DragTarget::WavePending) {
+		if (std::abs(x - drag_down_x_) >= kSweepSlopPx) {
+			drag_ = DragTarget::RegionSweep;
+			apply_region_sweep(x);
+		}
+		return;
+	}
 	if (drag_ == DragTarget::Pan) {
 		const int dx = x - drag_last_x_;
 		view_start_ -= static_cast<double>(dx) * frames_per_pixel_;
@@ -560,6 +692,8 @@ void GuiView::mouse_move(int x, int y) {
 		case DragTarget::RegionEnd:
 		case DragTarget::LoopStart:
 		case DragTarget::LoopEnd:
+		case DragTarget::WavePending:
+		case DragTarget::RegionSweep:
 		case DragTarget::Scrub:
 		case DragTarget::Pan:
 		case DragTarget::Budget:
@@ -591,10 +725,21 @@ void GuiView::mouse_move(int x, int y) {
 	case DragTarget::LoopEnd:
 		sampler_->set_loop(sampler_->loop_start(), frame);
 		break;
+	case DragTarget::RegionSweep:
+		sampler_->set_region(region_anchor_frame_, frame);
+		break;
 	case DragTarget::Scrub:
 		sampler_->scrub_preview(frame);
 		break;
-	default:
+	case DragTarget::None:
+	case DragTarget::WavePending:
+	case DragTarget::Pan:
+	case DragTarget::Budget:
+	case DragTarget::Attack:
+	case DragTarget::Decay:
+	case DragTarget::Sustain:
+	case DragTarget::Release:
+	case DragTarget::Root:
 		break;
 	}
 	dirty_ = true;
@@ -635,8 +780,49 @@ void GuiView::key_down(int keysym) {
 	}
 }
 
+/// Draws a stem plus a fat tab. Region tabs sit on the top edge; loop tabs on the bottom.
+void GuiView::draw_marker(
+	const MarkerGeom &geom,
+	uint32_t color,
+	const char *label,
+	bool region_handle,
+	bool is_start) {
+	if (geom.stem_x < wave_x_ - kMarkerHitPx || geom.stem_x >= wave_x_ + wave_w_ + kMarkerHitPx) {
+		return;
+	}
+	const int stem = region_handle ? 3 : 2;
+	if (region_handle) {
+		vline(geom.stem_x, wave_y_, wave_y_ + wave_h_, color);
+		if (stem > 1) {
+			vline(geom.stem_x - 1, wave_y_, wave_y_ + wave_h_, color);
+			vline(geom.stem_x + 1, wave_y_, wave_y_ + wave_h_, color);
+		}
+	} else {
+		const int stem_top = wave_y_ + wave_h_ - (wave_h_ * 2 / 3);
+		vline(geom.stem_x, stem_top, wave_y_ + wave_h_, color);
+		if (stem > 1) {
+			vline(geom.stem_x - 1, stem_top, wave_y_ + wave_h_, color);
+		}
+	}
+	fill_rect(geom.tab_x, geom.tab_y, geom.tab_w, geom.tab_h, color);
+	int label_len = 0;
+	for (const char *p = label; p && *p; ++p) {
+		++label_len;
+	}
+	const int label_w = label_len * 6;
+	int label_x = is_start ? geom.tab_x + geom.tab_w + 2 : geom.tab_x - label_w - 2;
+	if (label_x < wave_x_) {
+		label_x = geom.tab_x + geom.tab_w + 2;
+	}
+	if (label_x + label_w > wave_x_ + wave_w_) {
+		label_x = geom.tab_x - label_w - 2;
+	}
+	const int label_y = geom.tab_y + (geom.tab_h - 7) / 2;
+	draw_text(label_x, label_y, label, color);
+}
+
 void GuiView::draw_waveform() {
-	fill_rect(wave_x_, wave_y_, wave_w_, wave_h_, 0xFF1A140F);
+	fill_rect(wave_x_, wave_y_, wave_w_, wave_h_, kWaveBg);
 	hline(wave_x_, wave_x_ + wave_w_, wave_y_ + wave_h_ / 2, 0xFF3A2A1C);
 
 	const AudioBuffer *src = sampler_->source();
@@ -645,6 +831,20 @@ void GuiView::draw_waveform() {
 		return;
 	}
 	clamp_view();
+
+	int shade_x0 = frame_to_x(sampler_->region_start());
+	int shade_x1 = frame_to_x(sampler_->region_end());
+	if (shade_x1 < shade_x0) {
+		std::swap(shade_x0, shade_x1);
+	}
+	shade_x0 = std::max(wave_x_, shade_x0);
+	shade_x1 = std::min(wave_x_ + wave_w_, shade_x1);
+	if (shade_x1 <= shade_x0) {
+		shade_x1 = shade_x0 + 2;
+	}
+	fill_rect(shade_x0, wave_y_, shade_x1 - shade_x0, wave_h_, kRegionFill);
+	blend_rect(shade_x0, wave_y_, shade_x1 - shade_x0, wave_h_, kRegion, 56);
+
 	const int ch = static_cast<int>(src->channels);
 	for (int x = 0; x < wave_w_; ++x) {
 		const double f0 = view_start_ + static_cast<double>(x) * frames_per_pixel_;
@@ -671,22 +871,18 @@ void GuiView::draw_waveform() {
 		const int mid = wave_y_ + wave_h_ / 2;
 		const int y0 = mid - static_cast<int>(mx * (wave_h_ / 2 - 4));
 		const int y1 = mid - static_cast<int>(mn * (wave_h_ / 2 - 4));
-		vline(wave_x_ + x, y0, y1, kAmberDim);
+		const bool in_clip = i0 >= sampler_->region_start() && i0 < sampler_->region_end();
+		vline(wave_x_ + x, y0, y1, in_clip ? kAmber : kAmberDim);
 	}
 
-	auto marker = [&](uint64_t frame, uint32_t color, const char *label, bool tall) {
-		const int x = frame_to_x(frame);
-		if (x < wave_x_ || x >= wave_x_ + wave_w_) {
-			return;
-		}
-		vline(x, wave_y_, wave_y_ + (tall ? wave_h_ : wave_h_ * 2 / 3), color);
-		fill_rect(x - 3, wave_y_, 7, 10, color);
-		draw_text(x + 6, wave_y_ + 2, label, color);
-	};
-	marker(sampler_->region_start(), kRegion, "IN", true);
-	marker(sampler_->region_end(), kRegion, "OUT", true);
-	marker(sampler_->loop_start(), kLoop, "LS", false);
-	marker(sampler_->loop_end(), kLoop, "LE", false);
+	const MarkerGeom in = marker_geom(sampler_->region_start(), sampler_->region_end(), true, true);
+	const MarkerGeom out = marker_geom(sampler_->region_end(), sampler_->region_start(), true, false);
+	const MarkerGeom ls = marker_geom(sampler_->loop_start(), sampler_->loop_end(), false, true);
+	const MarkerGeom le = marker_geom(sampler_->loop_end(), sampler_->loop_start(), false, false);
+	draw_marker(in, kRegion, "IN", true, true);
+	draw_marker(out, kRegion, "OUT", true, false);
+	draw_marker(ls, kLoop, "LS", false, true);
+	draw_marker(le, kLoop, "LE", false, false);
 
 	if (sampler_->preview_playing()) {
 		const int x = frame_to_x(static_cast<uint64_t>(sampler_->preview_position()));
@@ -761,8 +957,8 @@ void GuiView::draw_controls() {
 	std::snprintf(vbuf, sizeof(vbuf), "%s", note_name(s.root_note).c_str());
 	slider(752, 430, "ROOT", s.root_note / 127.0, vbuf);
 
-	draw_text(16, 470, "Wheel zooms waveform. Middle-drag pans. Drag IN/OUT (region) and LS/LE (loop). No loop crossfade.", kMuted);
-	draw_text(16, 486, "Root note plays captured pitch. Other keys change playback rate. 16-bit / budget applied on COMMIT.", kMuted);
+	draw_text(16, 470, "Drag on the waveform to set the orange clip (IN to OUT). Click without dragging to scrub.", kMuted);
+	draw_text(16, 486, "IN/OUT tabs sit on the top edge; cyan LS/LE on the bottom. Drag tabs to trim. Wheel zooms, middle-drag pans.", kMuted);
 	draw_text(16, 510, status_.c_str(), kText);
 
 	if (sampler_->source()) {
