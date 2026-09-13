@@ -29,6 +29,7 @@ uint16_t read_u16(const std::vector<uint8_t> &b, size_t off) {
 }
 
 /// Little-endian 32-bit read used to inspect the WAV header.
+uint32_t read_u32(const std::vector<uint8_t> &b, size_t off) {
 	return static_cast<uint32_t>(b[off]) | (static_cast<uint32_t>(b[off + 1]) << 8) |
 		(static_cast<uint32_t>(b[off + 2]) << 16) | (static_cast<uint32_t>(b[off + 3]) << 24);
 }
@@ -85,12 +86,13 @@ TEST(wav_writer_header_and_pcm16_payload_size) {
 TEST(unique_clip_wav_path_adds_numeric_suffix) {
 	const std::string dir = fixture_dir() + "/clip_names";
 	std::error_code ec;
+	std::filesystem::remove_all(dir, ec);
 	std::filesystem::create_directories(dir, ec);
 	const std::string first = unique_clip_wav_path(dir);
-	CHECK(first.find("one44-clip.wav") != std::string::npos);
+	CHECK(std::filesystem::path(first).filename() == "one44-clip.wav");
 	{
 		std::ofstream(first, std::ios::binary) << "x";
 	}
 	const std::string second = unique_clip_wav_path(dir);
-	CHECK(second.find("one44-clip-2.wav") != std::string::npos);
+	CHECK(std::filesystem::path(second).filename() == "one44-clip-2.wav");
 }

@@ -144,10 +144,12 @@ GuiView::GuiView(Sampler *sampler) : sampler_(sampler) {
 	pixels_.assign(static_cast<size_t>(kGuiWidth * kGuiHeight), kBg);
 }
 
+/// Stores the host request_process callback (Win32 clicks never go through the CLAP timer).
 void GuiView::set_process_wakeup(std::function<void()> fn) {
 	process_wakeup_ = std::move(fn);
 }
 
+/// Wakes a sleeping CLAP host so AUDITION/preview is mixed in process().
 void GuiView::wake_host_process() {
 	if (process_wakeup_) {
 		process_wakeup_();
