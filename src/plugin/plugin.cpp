@@ -524,26 +524,49 @@ const clap_plugin_state_t state_ext = {
 	state_load,
 };
 
-bool gui_is_api_supported(const clap_plugin_t *, const char *api, bool is_floating) {
-	(void)is_floating;
-#ifdef __linux__
-	return api && std::strcmp(api, CLAP_WINDOW_API_X11) == 0;
+/// Native embedded window API for this build (X11 on Linux, Win32 HWND on Windows).
+const char *native_gui_api() {
+#ifdef _WIN32
+	return CLAP_WINDOW_API_WIN32;
+#elif defined(__linux__)
+	return CLAP_WINDOW_API_X11;
 #else
-	(void)api;
-	return false;
+	return nullptr;
 #endif
 }
 
+/// Extracts the host parent pointer from a CLAP window of the native API.
+void *parent_from_clap_window(const clap_window_t *window) {
+	if (window == nullptr || window->api == nullptr) {
+		return nullptr;
+	}
+	const char *api = native_gui_api();
+	if (api == nullptr || std::strcmp(window->api, api) != 0) {
+		return nullptr;
+	}
+#ifdef _WIN32
+	return window->win32;
+#elif defined(__linux__)
+	return reinterpret_cast<void *>(static_cast<uintptr_t>(window->x11));
+#else
+	return nullptr;
+#endif
+}
+
+bool gui_is_api_supported(const clap_plugin_t *, const char *api, bool is_floating) {
+	(void)is_floating;
+	const char *native = native_gui_api();
+	return native != nullptr && api != nullptr && std::strcmp(api, native) == 0;
+}
+
 bool gui_get_preferred_api(const clap_plugin_t *, const char **api, bool *is_floating) {
-#ifdef __linux__
-	*api = CLAP_WINDOW_API_X11;
+	const char *native = native_gui_api();
+	if (native == nullptr || api == nullptr || is_floating == nullptr) {
+		return false;
+	}
+	*api = native;
 	*is_floating = false;
 	return true;
-#else
-	(void)api;
-	(void)is_floating;
-	return false;
-#endif
 }
 
 bool gui_create(const clap_plugin_t *plugin, const char *api, bool is_floating) {
@@ -610,14 +633,7 @@ bool gui_set_parent(const clap_plugin_t *plugin, const clap_window_t *window) {
 	if (!p->gui) {
 		return false;
 	}
-	void *parent = nullptr;
-#ifdef __linux__
-	if (window && window->api && std::strcmp(window->api, CLAP_WINDOW_API_X11) == 0) {
-		parent = reinterpret_cast<void *>(static_cast<uintptr_t>(window->x11));
-	}
-#else
-	(void)window;
-#endif
+	void *parent = parent_from_clap_window(window);
 	if (!p->window.create_embedded(parent, p->gui.get())) {
 		return false;
 	}
@@ -673,11 +689,13 @@ void on_timer(const clap_plugin_t *plugin, clap_id) {
 
 const clap_plugin_timer_support_t timer_ext = {on_timer};
 
+#ifdef __linux__
 void on_fd(const clap_plugin_t *plugin, int, clap_posix_fd_flags_t) {
 	Plugin::self(plugin)->sync_gui();
 }
 
 const clap_plugin_posix_fd_support_t fd_ext = {on_fd};
+#endif
 
 const void *plugin_get_extension(const clap_plugin_t *, const char *id) {
 	if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) {
@@ -698,9 +716,11 @@ const void *plugin_get_extension(const clap_plugin_t *, const char *id) {
 	if (std::strcmp(id, CLAP_EXT_TIMER_SUPPORT) == 0) {
 		return &timer_ext;
 	}
+#ifdef __linux__
 	if (std::strcmp(id, CLAP_EXT_POSIX_FD_SUPPORT) == 0) {
 		return &fd_ext;
 	}
+#endif
 	return nullptr;
 }
 

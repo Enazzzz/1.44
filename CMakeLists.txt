@@ -38,7 +38,9 @@ set(ONE44_PLUGIN_SOURCES
 	src/gui/gui.cpp
 )
 
-if(UNIX AND NOT APPLE)
+if(WIN32)
+	list(APPEND ONE44_PLUGIN_SOURCES src/gui/gui_win32.cpp src/plugin/one44.def)
+elseif(UNIX AND NOT APPLE)
 	list(APPEND ONE44_PLUGIN_SOURCES src/gui/gui_x11.cpp)
 endif()
 
@@ -62,6 +64,11 @@ if(UNIX AND NOT APPLE)
 	set_target_properties(one44 PROPERTIES SUFFIX ".clap")
 elseif(WIN32)
 	set_target_properties(one44 PROPERTIES SUFFIX ".clap")
+	target_link_libraries(one44 PRIVATE gdi32 user32)
+	# Single-file drop-in for REAPER: do not require MinGW runtime DLLs on the user's PC.
+	if(MINGW)
+		target_link_options(one44 PRIVATE -static -static-libgcc -static-libstdc++ -Wl,--subsystem,windows)
+	endif()
 elseif(APPLE)
 	set_target_properties(one44 PROPERTIES
 		BUNDLE TRUE
@@ -87,20 +94,53 @@ target_include_directories(one44_tests PRIVATE
 target_compile_definitions(one44_tests PRIVATE
 	TEST_FIXTURE_DIR="${CMAKE_CURRENT_BINARY_DIR}/fixtures")
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
-add_test(NAME one44_unit_tests COMMAND one44_tests)
-add_test(NAME one44_clap_instantiate COMMAND one44_clap_probe $<TARGET_FILE:one44>)
-set_tests_properties(one44_clap_instantiate PROPERTIES DEPENDS one44)
 
 add_executable(one44_clap_probe tests/clap_probe.cpp)
 target_link_libraries(one44_clap_probe PRIVATE clap)
 if(UNIX)
 	target_link_libraries(one44_clap_probe PRIVATE dl)
 endif()
+if(MINGW)
+	target_link_options(one44_clap_probe PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 target_include_directories(one44_clap_probe PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/third_party/clap/include)
 
-add_custom_target(install-user
-	COMMAND ${CMAKE_COMMAND} -E make_directory "$ENV{HOME}/.clap"
-	COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:one44> "$ENV{HOME}/.clap/one44.clap"
-	DEPENDS one44
-	COMMENT "Install one44.clap into ~/.clap for REAPER and other CLAP hosts")
+if(NOT CMAKE_CROSSCOMPILING)
+	add_test(NAME one44_unit_tests COMMAND one44_tests)
+	add_test(NAME one44_clap_instantiate COMMAND one44_clap_probe $<TARGET_FILE:one44>)
+	set_tests_properties(one44_clap_instantiate PROPERTIES DEPENDS one44)
+else()
+	find_program(ONE44_WINE wine)
+	if(NOT ONE44_WINE)
+		find_program(ONE44_WINE wine64)
+	endif()
+	if(ONE44_WINE)
+		add_test(NAME one44_clap_instantiate
+			COMMAND ${ONE44_WINE} one44_clap_probe.exe one44.clap)
+		set_tests_properties(one44_clap_instantiate PROPERTIES
+			DEPENDS one44
+			WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+	endif()
+endif()
+
+if(WIN32)
+	add_custom_command(TARGET one44 POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/dist/windows-x64"
+		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:one44> "${CMAKE_SOURCE_DIR}/dist/windows-x64/one44.clap"
+		COMMENT "Copy Windows one44.clap into dist/windows-x64 for REAPER")
+endif()
+
+if(WIN32)
+	add_custom_target(install-user
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$ENV{LOCALAPPDATA}/Programs/Common/CLAP"
+		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:one44> "$ENV{LOCALAPPDATA}/Programs/Common/CLAP/one44.clap"
+		DEPENDS one44
+		COMMENT "Install one44.clap into %LOCALAPPDATA%\\Programs\\Common\\CLAP")
+else()
+	add_custom_target(install-user
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$ENV{HOME}/.clap"
+		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:one44> "$ENV{HOME}/.clap/one44.clap"
+		DEPENDS one44
+		COMMENT "Install one44.clap into ~/.clap for REAPER and other CLAP hosts")
+endif()
