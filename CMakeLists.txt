@@ -20,6 +20,8 @@ set(ONE44_CORE_SOURCES
 	src/core/zero_crossing.cpp
 	src/core/envelope.cpp
 	src/core/voice.cpp
+	src/core/paths.cpp
+	src/core/wav_write.cpp
 	src/core/sampler.cpp
 )
 
@@ -84,6 +86,7 @@ set(ONE44_TEST_SOURCES
 	tests/test_pitch.cpp
 	tests/test_decoder.cpp
 	tests/test_voice.cpp
+	tests/test_wav_write.cpp
 )
 
 add_executable(one44_tests ${ONE44_TEST_SOURCES})

@@ -3,6 +3,7 @@
 #include "core/sampler.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,9 @@ public:
 
 	/// Rebuilds the framebuffer from the current sampler state.
 	void paint();
+
+	/// Host callback so AUDITION/preview can wake `clap.process` (REAPER may be asleep).
+	void set_process_wakeup(std::function<void()> fn);
 
 	bool consume_dirty();
 	const std::string &status() const { return status_; }
@@ -87,7 +91,11 @@ private:
 	DragTarget hit_waveform_handle(int x, int y) const;
 	void clamp_view();
 
+	/// Asks the CLAP host to call process() so preview audio is mixed into the track.
+	void wake_host_process();
+
 	Sampler *sampler_;
+	std::function<void()> process_wakeup_;
 	std::vector<uint32_t> pixels_;
 	int mouse_x_ = 0;
 	int mouse_y_ = 0;
@@ -102,6 +110,8 @@ private:
 	std::string browse_dir_;
 	std::vector<std::string> browse_names_;
 	std::vector<bool> browse_is_dir_;
+	/// True for the always-on pinned Samples row (not a child of the current folder).
+	std::vector<bool> browse_is_pin_;
 	int browse_scroll_ = 0;
 	std::string status_ = "Load a WAV or MP3, drag on the waveform to set the clip, COMMIT if it fits.";
 	bool dirty_ = true;
