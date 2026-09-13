@@ -159,6 +159,9 @@ void Plugin::sync_gui() {
 		window.process_events();
 		window.blit();
 	}
+	if (host != nullptr && sampler.wants_process()) {
+		host->request_process(host);
+	}
 }
 
 bool plugin_init(const clap_plugin_t *plugin) {
@@ -240,17 +243,34 @@ void handle_event(Plugin *p, const clap_event_header_t *hdr) {
 	}
 }
 
+/// Mixes MIDI voices and AUDITION/preview into the host output buffers.
+/// Accepts float32 or float64 stereo outputs; returns CONTINUE while preview or a voice is live.
 clap_process_status plugin_process(const clap_plugin_t *plugin, const clap_process_t *process) {
 	Plugin *p = Plugin::self(plugin);
 	const uint32_t nframes = process->frames_count;
 	if (process->audio_outputs_count < 1 || process->audio_outputs == nullptr ||
-		process->audio_outputs[0].data32 == nullptr || process->audio_outputs[0].channel_count < 2) {
+		process->audio_outputs[0].channel_count < 2) {
 		return CLAP_PROCESS_ERROR;
 	}
-	float *left = process->audio_outputs[0].data32[0];
-	float *right = process->audio_outputs[0].data32[1];
-	if (left == nullptr || right == nullptr) {
+	float *left32 = process->audio_outputs[0].data32 ? process->audio_outputs[0].data32[0] : nullptr;
+	float *right32 = process->audio_outputs[0].data32 ? process->audio_outputs[0].data32[1] : nullptr;
+	double *left64 = process->audio_outputs[0].data64 ? process->audio_outputs[0].data64[0] : nullptr;
+	double *right64 = process->audio_outputs[0].data64 ? process->audio_outputs[0].data64[1] : nullptr;
+	const bool use32 = left32 != nullptr && right32 != nullptr;
+	const bool use64 = left64 != nullptr && right64 != nullptr;
+	if (!use32 && !use64) {
 		return CLAP_PROCESS_ERROR;
+	}
+
+	std::vector<float> tmp_l;
+	std::vector<float> tmp_r;
+	float *left = left32;
+	float *right = right32;
+	if (!use32) {
+		tmp_l.assign(nframes, 0.0f);
+		tmp_r.assign(nframes, 0.0f);
+		left = tmp_l.data();
+		right = tmp_r.data();
 	}
 
 	const uint32_t nev = process->in_events ? process->in_events->size(process->in_events) : 0;
@@ -277,7 +297,16 @@ clap_process_status plugin_process(const clap_plugin_t *plugin, const clap_proce
 		p->sampler.render(left + i, right + i, chunk, p->host_sr);
 		i += chunk;
 	}
-	return CLAP_PROCESS_CONTINUE;
+
+	if (!use32 && use64) {
+		for (uint32_t s = 0; s < nframes; ++s) {
+			left64[s] = static_cast<double>(left[s]);
+			right64[s] = static_cast<double>(right[s]);
+		}
+	}
+	process->audio_outputs[0].constant_mask = 0;
+	// Stay awake while AUDITION/preview or a MIDI voice is sounding so REAPER keeps calling process().
+	return p->sampler.wants_process() ? CLAP_PROCESS_CONTINUE : CLAP_PROCESS_SLEEP;
 }
 
 uint32_t audio_ports_count(const clap_plugin_t *, bool is_input) {
@@ -575,6 +604,12 @@ bool gui_create(const clap_plugin_t *plugin, const char *api, bool is_floating) 
 	}
 	Plugin *p = Plugin::self(plugin);
 	p->gui = std::make_unique<GuiView>(&p->sampler);
+	// Win32 mouse handling never goes through sync_gui; wake process() from the GUI too.
+	p->gui->set_process_wakeup([p]() {
+		if (p->host != nullptr) {
+			p->host->request_process(p->host);
+		}
+	});
 	p->gui_created = true;
 	p->gui_floating = is_floating;
 	return true;

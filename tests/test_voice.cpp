@@ -140,3 +140,27 @@ TEST(midi_render_makes_sound_after_commit) {
 	}
 	CHECK(peak > 0.1);
 }
+
+TEST(preview_render_is_audible_after_load_without_commit) {
+	Sampler sampler;
+	AudioBuffer buf;
+	buf.channels = 1;
+	buf.sample_rate = 44100.0;
+	buf.frame_count = 2048;
+	buf.interleaved.resize(2048);
+	for (int i = 0; i < 2048; ++i) {
+		buf.interleaved[static_cast<size_t>(i)] = (i % 32) < 16 ? 0.8f : -0.8f;
+	}
+	sampler.load_buffer(buf);
+	CHECK(!sampler.has_committed());
+	sampler.start_preview();
+	CHECK(sampler.preview_playing());
+	CHECK(sampler.wants_process());
+	std::vector<float> l(256, 0.0f), r(256, 0.0f);
+	sampler.render(l.data(), r.data(), 256, 44100.0);
+	double peak = 0.0;
+	for (float x : l) {
+		peak = std::max(peak, static_cast<double>(std::fabs(x)));
+	}
+	CHECK(peak > 0.1);
+}

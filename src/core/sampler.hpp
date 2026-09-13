@@ -71,6 +71,18 @@ public:
 	bool has_committed() const;
 	CommittedSample committed_copy() const;
 
+	/// True while GUI preview is running or a MIDI voice is sounding (host should call process).
+	bool wants_process() const;
+
+	/// Commits the current region (same reject-over-budget gate as COMMIT; never
+	/// silent-truncates), then writes a 16-bit PCM WAV of that clip into Samples.
+	struct ClipExport {
+		bool ok = false;
+		std::string path;
+		std::string message;
+	};
+	ClipExport export_clip_wav();
+
 	/// Preview transport: plays the selected *source* region, looping when enabled.
 	void start_preview();
 	void stop_preview();

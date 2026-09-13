@@ -1,6 +1,8 @@
 #include "gui.hpp"
 
 #include "core/pitch.hpp"
+#include "core/paths.hpp"
+#include "core/sampler.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -9,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <system_error>
+#include <utility>
 
 namespace one44 {
 namespace {
@@ -139,6 +142,16 @@ std::string join_browse_path(const std::string &dir, const std::string &name) {
 /// Constructs a dark ASR-styled editor bound to `sampler`.
 GuiView::GuiView(Sampler *sampler) : sampler_(sampler) {
 	pixels_.assign(static_cast<size_t>(kGuiWidth * kGuiHeight), kBg);
+}
+
+void GuiView::set_process_wakeup(std::function<void()> fn) {
+	process_wakeup_ = std::move(fn);
+}
+
+void GuiView::wake_host_process() {
+	if (process_wakeup_) {
+		process_wakeup_();
+	}
 }
 
 /// Marks the view as consumed so the platform window can skip redundant blits.
@@ -300,6 +313,7 @@ void GuiView::zoom_at(int x, double factor) {
 
 void GuiView::open_file_browser() {
 	file_browser_ = true;
+	samples_directory(true);
 	if (browse_dir_.empty()) {
 		browse_dir_ = default_browse_dir();
 	}
@@ -311,8 +325,13 @@ void GuiView::open_file_browser() {
 void GuiView::refresh_dir() {
 	browse_names_.clear();
 	browse_is_dir_.clear();
+	browse_is_pin_.clear();
+	browse_names_.push_back("Samples");
+	browse_is_dir_.push_back(true);
+	browse_is_pin_.push_back(true);
 	browse_names_.push_back("..");
 	browse_is_dir_.push_back(true);
+	browse_is_pin_.push_back(false);
 	std::error_code ec;
 	const std::filesystem::path dir(browse_dir_);
 	if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
@@ -340,10 +359,12 @@ void GuiView::refresh_dir() {
 	for (const auto &d : dirs) {
 		browse_names_.push_back(d);
 		browse_is_dir_.push_back(true);
+		browse_is_pin_.push_back(false);
 	}
 	for (const auto &f : files) {
 		browse_names_.push_back(f);
 		browse_is_dir_.push_back(false);
+		browse_is_pin_.push_back(false);
 	}
 }
 
@@ -449,6 +470,7 @@ void GuiView::begin_scrub(uint64_t frame) {
 	if (!sampler_->preview_playing()) {
 		sampler_->start_preview();
 	}
+	wake_host_process();
 }
 
 void GuiView::mouse_down(int x, int y, int button) {
@@ -483,6 +505,12 @@ void GuiView::mouse_down(int x, int y, int button) {
 		if (y >= list_y) {
 			const int row = (y - list_y) / row_h + browse_scroll_;
 			if (row >= 0 && row < static_cast<int>(browse_names_.size())) {
+				if (row < static_cast<int>(browse_is_pin_.size()) && browse_is_pin_[static_cast<size_t>(row)]) {
+					browse_dir_ = samples_directory(true);
+					browse_scroll_ = 0;
+					refresh_dir();
+					return;
+				}
 				const std::string name = browse_names_[static_cast<size_t>(row)];
 				if (browse_is_dir_[static_cast<size_t>(row)]) {
 					if (name == "..") {
@@ -532,11 +560,16 @@ void GuiView::mouse_down(int x, int y, int button) {
 		}
 		return;
 	}
-	if (hit_button(x, y, 208, 12, 70, 24)) {
+	if (hit_button(x, y, 208, 12, 88, 24)) {
+		const Sampler::ClipExport exported = sampler_->export_clip_wav();
+		status_ = exported.message;
+		return;
+	}
+	if (hit_button(x, y, 304, 12, 70, 24)) {
 		toggle_rate(SampleRateOption::Rate44100);
 		return;
 	}
-	if (hit_button(x, y, 282, 12, 78, 24)) {
+	if (hit_button(x, y, 378, 12, 78, 24)) {
 		toggle_rate(SampleRateOption::Rate29760);
 		return;
 	}
@@ -546,7 +579,8 @@ void GuiView::mouse_down(int x, int y, int button) {
 			status_ = "Preview stopped.";
 		} else {
 			sampler_->start_preview();
-			status_ = "Previewing selection (looped if enabled).";
+			status_ = "Previewing selection into the REAPER track (no MIDI keyboard needed).";
+			wake_host_process();
 		}
 		return;
 	}
@@ -768,6 +802,7 @@ void GuiView::key_down(int keysym) {
 			sampler_->stop_preview();
 		} else {
 			sampler_->start_preview();
+			wake_host_process();
 		}
 		dirty_ = true;
 		return;
@@ -911,8 +946,9 @@ void GuiView::draw_controls() {
 	const SamplerSettings s = sampler_->settings();
 	button(16, 12, 88, 24, "LOAD", false);
 	button(112, 12, 88, 24, "COMMIT", sampler_->has_committed());
-	button(208, 12, 70, 24, "44.1k", s.sample_rate == SampleRateOption::Rate44100);
-	button(282, 12, 78, 24, "29.76k", s.sample_rate == SampleRateOption::Rate29760);
+	button(208, 12, 88, 24, "EXPORT", false);
+	button(304, 12, 70, 24, "44.1k", s.sample_rate == SampleRateOption::Rate44100);
+	button(378, 12, 78, 24, "29.76k", s.sample_rate == SampleRateOption::Rate29760);
 	button(16, 44, 88, 22, sampler_->preview_playing() ? "STOP" : "AUDITION", sampler_->preview_playing());
 	button(112, 44, 100, 22, "PREV LOOP", s.preview_loop);
 	button(220, 44, 72, 22, "MONO", s.mono_downmix);
@@ -932,7 +968,7 @@ void GuiView::draw_controls() {
 		format_bytes(used).c_str(),
 		format_bytes(budget).c_str(),
 		ok ? "FITS" : "OVER BUDGET");
-	draw_text(370, 18, memline, ok ? kGood : kBad);
+	draw_text(470, 18, memline, ok ? kGood : kBad);
 
 	fill_rect(16, 74, 280, 18, 0xFF2A2018);
 	const double t = std::max(0.0, std::min(1.0, (static_cast<double>(budget) / 1024.0 - 64.0) / (8192.0 - 64.0)));
@@ -957,8 +993,8 @@ void GuiView::draw_controls() {
 	std::snprintf(vbuf, sizeof(vbuf), "%s", note_name(s.root_note).c_str());
 	slider(752, 430, "ROOT", s.root_note / 127.0, vbuf);
 
-	draw_text(16, 470, "Drag on the waveform to set the orange clip (IN to OUT). Click without dragging to scrub.", kMuted);
-	draw_text(16, 486, "IN/OUT tabs sit on the top edge; cyan LS/LE on the bottom. Drag tabs to trim. Wheel zooms, middle-drag pans.", kMuted);
+	draw_text(16, 470, "Drag on the waveform to set the orange clip. EXPORT writes a 16-bit WAV to Samples for the timeline.", kMuted);
+	draw_text(16, 486, "AUDITION plays the clip in REAPER (no MIDI keyboard). IN/OUT tabs on top, LS/LE on the bottom. Wheel zooms.", kMuted);
 	draw_text(16, 510, status_.c_str(), kText);
 
 	if (sampler_->source()) {
@@ -990,11 +1026,17 @@ void GuiView::draw_file_browser() {
 			break;
 		}
 		const int y = list_y + i * row_h;
+		const bool is_pin = idx < static_cast<int>(browse_is_pin_.size()) && browse_is_pin_[static_cast<size_t>(idx)];
 		const bool is_dir = browse_is_dir_[static_cast<size_t>(idx)];
-		if (is_dir) {
-			fill_rect(36, y - 2, kGuiWidth - 80, row_h, 0xFF2A2218);
+		if (is_pin) {
+			fill_rect(36, y - 2, kGuiWidth - 80, row_h, 0xFF4A3010);
+			draw_text(44, y, "Samples  (pinned)", kAmber);
+		} else {
+			if (is_dir) {
+				fill_rect(36, y - 2, kGuiWidth - 80, row_h, 0xFF2A2218);
+			}
+			draw_text(44, y, browse_names_[static_cast<size_t>(idx)].c_str(), is_dir ? kAmber : kText);
 		}
-		draw_text(44, y, browse_names_[static_cast<size_t>(idx)].c_str(), is_dir ? kAmber : kText);
 	}
 }
 

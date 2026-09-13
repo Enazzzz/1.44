@@ -20,6 +20,8 @@ Load WAV or MP3, select a region, and commit it only if the 16-bit capture would
 - Loop modes: one-shot, forward, ping-pong
 - MIDI instrument: root note at captured pitch/speed; other notes change rate
 - ADSR amplitude envelope
+- **EXPORT** 16-bit PCM WAV of the committed clip to `%USERPROFILE%\Samples` (commit gate first; never silent-truncate)
+- Pinned **Samples** row at the top of the LOAD browser in every directory
 
 Out of scope: time-stretch, multi-zone mapping, effects.
 
@@ -37,7 +39,7 @@ Then:
 2. Insert a track → **FX** → look for **1.44**
 3. Verified names: **CLAP:1.44** (Add FX) / **CLAPi: 1.44** (instrument)
 
-Track setup: arm the track for MIDI (or use the Virtual MIDI Keyboard). Open the editor: **Load** a WAV/MP3, drag **IN/OUT**, confirm the memory readout fits, **Commit**, then play notes. Root note (default C4 / MIDI 60) plays at the captured speed; other keys change playback rate.
+Open the editor: **LOAD** a WAV/MP3 (pinned **Samples** is always the first row), drag **IN/OUT**, confirm the memory readout fits. **AUDITION** plays the clip out the REAPER track — no MIDI keyboard required. **EXPORT** writes a 16-bit WAV of the committed clip to `%USERPROFILE%\Samples` (created if missing); the status line shows the full path — drag that file onto the timeline. **COMMIT** (or EXPORT’s commit gate) is required before MIDI notes sound. Root note (default C4 / MIDI 60) plays at the captured speed; other keys change playback rate. Over-budget clips are rejected, never truncated.
 
 ## Build (Windows, native)
 
@@ -123,9 +125,10 @@ This plugin is a **CLAP instrument**. In REAPER that means a track FX slot, not 
 5. Track setup:
    - Insert a new track
    - Click **FX** → CLAP → **1.44** (verified FX name: `CLAPi: 1.44 (1.44)`; Add-FX name `CLAP:1.44`)
-   - Arm the track for MIDI (record-arm + input monitoring) or add a Virtual MIDI Keyboard
-   - Open the plugin GUI: **Load** a WAV/MP3, drag **IN/OUT**, confirm the memory readout fits, **Commit**, then play notes
-   - Root note (default C4 / MIDI 60) plays at the captured speed; other keys change playback rate
+   - Open the plugin GUI: **LOAD** a WAV/MP3 (pinned **Samples** stays at the top of every folder), drag **IN/OUT**, confirm the memory readout fits
+   - **AUDITION** to hear the clip on the track (no MIDI keyboard)
+   - **EXPORT** for a 16-bit WAV in `~/Samples` (Windows: `%USERPROFILE%\Samples`); drag the path shown in the status line onto the timeline
+   - **COMMIT** then play notes if you want MIDI rate-pitch. Root note (default C4 / MIDI 60) plays at the captured speed
 
 Verified on the official REAPER 7.79 Linux x86_64 trial (no license): after copying `one44.clap` to `~/.clap`, `TrackFX_AddByName(..., "CLAP:1.44")` instantiates the plugin as a CLAP instrument. REAPER's scan cache records:
 
@@ -172,10 +175,11 @@ reaper -nonewinst "$(pwd)/scripts/reaper-check-one44.lua"
 
 ## GUI map
 
-- **LOAD** — browse for WAV/MP3 (no input-format cap; the cap is after Commit)
+- **LOAD** — browse for WAV/MP3 (no input-format cap; the cap is after Commit). A pinned **Samples** row stays at the top of every directory (`%USERPROFILE%\Samples` / `~/Samples`, created if missing)
 - **COMMIT** — resample/quantize the region to 16-bit at 44.1k or 29.76k; reject if over budget
+- **EXPORT** — same commit gate, then write a 16-bit PCM WAV of the committed clip to Samples (`one44-clip.wav`, then `one44-clip-2.wav`, …). Status shows the full path for dragging onto the REAPER timeline. Never silent-truncates
 - **44.1k / 29.76k** — hardware rate switch (live budget updates)
-- **AUDITION / PREV LOOP** — preview the selected region
+- **AUDITION / PREV LOOP** — preview the selected region mixed into the host output (no MIDI keyboard required)
 - **MONO** — downmix on commit
 - **SNAP ZX** — snap loop markers to the nearest zero-crossing
 - **ONE-SHOT / FORWARD / PINGPONG** — MIDI loop mode (no loop crossfade)
@@ -185,7 +189,7 @@ reaper -nonewinst "$(pwd)/scripts/reaper-check-one44.lua"
 
 ## Tests
 
-Constraint math, MIDI playback-rate mapping, WAV/MP3 decode, and CLAP instantiate/process are required and run via `ctest`. The probe also checks that the native GUI API is advertised (`x11` on Linux, `win32` on Windows) and that `gui.create` succeeds without embedding.
+Constraint math, MIDI playback-rate mapping, WAV/MP3 decode, 16-bit WAV export, preview-after-load (no commit), and CLAP instantiate/process are required and run via `ctest`. The probe also checks that the native GUI API is advertised (`x11` on Linux, `win32` on Windows) and that `gui.create` succeeds without embedding.
 
 Byte-size formula (always 16-bit):
 

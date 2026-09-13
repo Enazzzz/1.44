@@ -3,10 +3,13 @@
 #include "pitch.hpp"
 #include "resampler.hpp"
 #include "zero_crossing.hpp"
+#include "paths.hpp"
+#include "wav_write.hpp"
 
 #include <algorithm>
-#include <cstring>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 
 namespace one44 {
 namespace {
@@ -235,6 +238,62 @@ bool Sampler::has_committed() const {
 CommittedSample Sampler::committed_copy() const {
 	std::lock_guard<std::mutex> lock(mutex_);
 	return committed_;
+}
+
+bool Sampler::wants_process() const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (preview_playing_) {
+		return true;
+	}
+	for (const auto &v : voices_) {
+		if (v.in_use) {
+			return true;
+		}
+	}
+	return false;
+}
+
+Sampler::ClipExport Sampler::export_clip_wav() {
+	ClipExport result;
+	// Same reject-over-budget gate as COMMIT: never silent-truncate the region.
+	const CommitDecision decision = commit();
+	if (!decision.accepted) {
+		if (decision.byte_size == 0) {
+			result.message = "EXPORT: load audio and set a region first.";
+			return result;
+		}
+		char msg[192];
+		std::snprintf(
+			msg,
+			sizeof(msg),
+			"EXPORT rejected: %llu bytes exceeds %llu. Shorten the region.",
+			static_cast<unsigned long long>(decision.byte_size),
+			static_cast<unsigned long long>(decision.budget));
+		result.message = msg;
+		return result;
+	}
+	const CommittedSample sample = committed_copy();
+	if (sample.frame_count == 0 || sample.pcm.empty()) {
+		result.message = "EXPORT: nothing committed.";
+		return result;
+	}
+	const std::string dir = samples_directory(true);
+	const std::string path = unique_clip_wav_path(dir);
+	std::string err;
+	if (!write_wav_pcm16(
+			path,
+			sample.pcm.data(),
+			sample.frame_count,
+			sample.channels,
+			sample.sample_rate,
+			&err)) {
+		result.message = "EXPORT failed: " + err;
+		return result;
+	}
+	result.ok = true;
+	result.path = path;
+	result.message = "Wrote " + path + "  —  drag that WAV onto the REAPER timeline.";
+	return result;
 }
 
 void Sampler::start_preview() {
